@@ -46,8 +46,8 @@ def tts():
             'config_path': "/models/fr/fr_FR-tom-med.json"
         },
         'el': {
-            'model_path': "/models/el/el_GR-rapunzelina-low.onnx",
-            'config_path': "/models/el/el_GR-rapunzelina-low.json"
+            'model_path': "/models/el/el_GR-chreece-high.onnx",
+            'config_path': "/models/el/el_GR-chreece-high.json"
         },
         'tr': {
             'model_path': "/models/tr/tr_TR-fettah-medium.onnx",

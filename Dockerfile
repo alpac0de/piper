@@ -42,10 +42,9 @@ RUN mkdir -p /models/fr && cd /models/fr && \
 
 # Téléchargement du modèle grec "el_gr-mls-medium"
 RUN mkdir -p /models/el && cd /models/el && \
-    wget https://huggingface.co/rhasspy/piper-voices/resolve/main/el/el_GR/rapunzelina/low/el_GR-rapunzelina-low.onnx && \
-    wget https://huggingface.co/rhasspy/piper-voices/resolve/main/el/el_GR/rapunzelina/low/el_GR-rapunzelina-low.onnx.json && \
-    mv el_GR-rapunzelina-low.onnx.json el_GR-rapunzelina-low.json
-
+    wget https://huggingface.co/Chreece/el_GR-chreece-high/resolve/main/el_GR-chreece-high.onnx && \
+    wget https://huggingface.co/Chreece/el_GR-chreece-high/resolve/main/el_GR-chreece-high.onnx.json && \
+    mv el_GR-chreece-high.onnx.json el_GR-chreece-high.json
 
 # Téléchargement du modèle turc "tr_TR-fettah-medium"
 RUN mkdir -p /models/tr && cd /models/tr && \
