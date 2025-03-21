@@ -17,15 +17,15 @@ tempfile.tempdir = '/tmp/piper'
 @app.route('/tts', methods=['POST'])
 def tts():
     """
-    Endpoint TTS protégé par un token en header Authorization: Bearer <token>.
-    Reçoit un JSON {"text": "...", "lang": "..."} et renvoie un fichier audio WAV.
+    TTS endpoint protected by a token in the header Authorization: Bearer <token>.
+    Receives a JSON {"text": "...", "lang": "..."} and returns a WAV audio file.
     """
 
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         return jsonify({"error": "Missing or invalid Authorization header"}), 401
 
-    token = auth_header.split(" ")[1]  # Récupère la partie après 'Bearer '
+    token = auth_header.split(" ")[1]  # Gets the part after 'Bearer'
     if token != ACCESS_TOKEN:
         return jsonify({"error": "Invalid token"}), 401
 
@@ -34,7 +34,7 @@ def tts():
         return jsonify({'error': 'No text provided'}), 400
 
     text = data['text']
-    lang = data.get('lang', 'en')  # Valeur par défaut : 'en'
+    lang = data.get('lang', 'en')  # Default value: 'en'
 
     models_config = {
         'en': {

@@ -1,7 +1,5 @@
-# Utilise l'image de base Debian
 FROM debian:bookworm-slim
 
-# Installation des dépendances
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
@@ -11,10 +9,8 @@ RUN apt-get update && apt-get install -y \
     tar \
     && rm -rf /var/lib/apt/lists/*
 
-# Définition du répertoire de travail
 WORKDIR /app
 
-# Création des dossiers nécessaires
 RUN mkdir /models && \
     mkdir -p /tmp/piper
 
