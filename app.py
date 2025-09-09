@@ -2,7 +2,9 @@ import os
 import subprocess
 import tempfile
 import logging
+import wave
 from flask import Flask, request, jsonify, send_file
+from piper import PiperVoice
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.DEBUG)
@@ -13,6 +15,9 @@ if "ACCESS_TOKEN" not in os.environ:
 ACCESS_TOKEN = os.environ["ACCESS_TOKEN"]
 
 tempfile.tempdir = '/tmp/piper'
+
+# Voice cache to avoid reloading models
+voice_cache = {}
 
 @app.route('/tts', methods=['POST'])
 def tts():
@@ -39,19 +44,15 @@ def tts():
     models_config = {
         'en': {
             'model_path': "/models/en_US-lessac-medium.onnx",
-            'config_path': "/models/en_US-lessac-medium.json"
         },
         'fr': {
-            'model_path': "/models/fr/fr_FR-tom-med.onnx",
-            'config_path': "/models/fr/fr_FR-tom-med.json"
+            'model_path': "/models/fr_FR-tom-medium.onnx",
         },
         'el': {
-            'model_path': "/models/el/el_GR-chreece-high.onnx",
-            'config_path': "/models/el/el_GR-chreece-high.json"
+            'model_path': "/models/el_GR-chreece-high.onnx",
         },
         'tr': {
-            'model_path': "/models/tr/tr_TR-fettah-medium.onnx",
-            'config_path': "/models/tr/tr_TR-fettah-medium.json"
+            'model_path': "/models/tr_TR-fettah-medium.onnx",
         },
     }
 
@@ -59,7 +60,6 @@ def tts():
         return jsonify({'error': f'Unsupported language: {lang}'}), 400
 
     model_path = models_config[lang]['model_path']
-    config_path = models_config[lang]['config_path']
 
     with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
         output_path = temp_file.name
@@ -67,28 +67,25 @@ def tts():
     try:
         app.logger.debug(f"Trying to process text: '{text}' (lang={lang})")
 
-        process = subprocess.run(
-            [
-                '/usr/local/bin/piper',
-                '--model', model_path,
-                '--config', config_path,
-                '--output_file', output_path
-            ],
-            input=text.encode(),
-            capture_output=True,
-            check=True
-        )
-        app.logger.debug(f"Piper stdout: {process.stdout}")
-        app.logger.debug(f"Piper stderr: {process.stderr}")
+        # Load voice from cache or create new one
+        if model_path not in voice_cache:
+            app.logger.debug(f"Loading voice model: {model_path}")
+            voice_cache[model_path] = PiperVoice.load(model_path)
+        
+        voice = voice_cache[model_path]
+        
+        # Generate speech using piper Python API with proper WAV format
+        with wave.open(output_path, 'wb') as wav_file:
+            # Let piper set the wav file parameters
+            voice.synthesize_wav(text, wav_file)
+
+        app.logger.debug(f"Piper generation completed successfully")
 
         return send_file(output_path, mimetype='audio/wav')
 
-    except subprocess.CalledProcessError as e:
-        app.logger.error(f"Piper error: {e.stderr.decode()}")
-        return jsonify({'error': f'Piper error: {e.stderr.decode()}'}), 500
     except Exception as e:
-        app.logger.error(f"Unexpected error: {str(e)}")
-        return jsonify({'error': f'Unexpected error: {str(e)}'}), 500
+        app.logger.error(f"Piper error: {str(e)}")
+        return jsonify({'error': f'Piper error: {str(e)}'}), 500
     finally:
         if os.path.exists(output_path):
             os.unlink(output_path)
