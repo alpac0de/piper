@@ -46,7 +46,7 @@ def tts():
             'model_path': "/models/en_US-lessac-medium.onnx",
         },
         'fr': {
-            'model_path': "/models/fr_FR-tom-medium.onnx",
+            'model_path': "/models/fr_FR-upmc-medium.onnx",
         },
         'el': {
             'model_path': "/models/el_GR-chreece-high.onnx",

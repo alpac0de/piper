@@ -26,8 +26,8 @@ RUN cd /models && \
     wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx && \
     wget https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json && \
     # French model
-    wget https://huggingface.co/rhasspy/piper-voices/resolve/main/fr/fr_FR/tom/medium/fr_FR-tom-medium.onnx && \
-    wget https://huggingface.co/rhasspy/piper-voices/resolve/main/fr/fr_FR/tom/medium/fr_FR-tom-medium.onnx.json && \
+    wget https://huggingface.co/rhasspy/piper-voices/resolve/main/fr/fr_FR/upmc/medium/fr_FR-upmc-medium.onnx && \
+    wget https://huggingface.co/rhasspy/piper-voices/resolve/main/fr/fr_FR/upmc/medium/fr_FR-upmc-medium.onnx.json && \
     # Greek model
     wget https://huggingface.co/Chreece/el_GR-chreece-high/resolve/main/el_GR-chreece-high.onnx && \
     wget https://huggingface.co/Chreece/el_GR-chreece-high/resolve/main/el_GR-chreece-high.onnx.json && \
