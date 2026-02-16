@@ -52,7 +52,16 @@ def tts():
             'model_path': "/models/el_GR-chreece-high.onnx",
         },
         'tr': {
-            'model_path': "/models/tr_TR-fettah-medium.onnx",
+            'model_path': "/models/tr_TR-dfki-medium.onnx",
+        },
+        'de': {
+            'model_path': "/models/de_DE-thorsten-medium.onnx",
+        },
+        'es': {
+            'model_path': "/models/es_ES-davefx-medium.onnx",
+        },
+        'it': {
+            'model_path': "/models/it_IT-paola-medium.onnx",
         },
     }
 
