@@ -4,7 +4,7 @@ import tempfile
 import logging
 import wave
 from flask import Flask, request, jsonify, send_file
-from piper import PiperVoice
+from piper import PiperVoice, SynthesisConfig
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.DEBUG)
@@ -39,7 +39,15 @@ def tts():
         return jsonify({'error': 'No text provided'}), 400
 
     text = data['text']
-    lang = data.get('lang', 'en')  # Default value: 'en'
+    lang = data.get('lang', 'en')
+
+    try:
+        length_scale = float(data.get('length_scale', 1.0))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'length_scale must be a number'}), 400
+
+    if not 0.1 <= length_scale <= 5.0:
+        return jsonify({'error': 'length_scale must be between 0.1 and 5.0'}), 400
 
     models_config = {
         'en': {
@@ -74,7 +82,7 @@ def tts():
         output_path = temp_file.name
 
     try:
-        app.logger.debug(f"Trying to process text: '{text}' (lang={lang})")
+        app.logger.debug(f"Trying to process text: '{text}' (lang={lang}, length_scale={length_scale})")
 
         # Load voice from cache or create new one
         if model_path not in voice_cache:
@@ -83,10 +91,9 @@ def tts():
         
         voice = voice_cache[model_path]
         
-        # Generate speech using piper Python API with proper WAV format
+        syn_config = SynthesisConfig(length_scale=length_scale)
         with wave.open(output_path, 'wb') as wav_file:
-            # Let piper set the wav file parameters
-            voice.synthesize_wav(text, wav_file)
+            voice.synthesize_wav(text, wav_file, syn_config=syn_config)
 
         app.logger.debug(f"Piper generation completed successfully")
 
