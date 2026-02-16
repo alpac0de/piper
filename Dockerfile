@@ -1,5 +1,7 @@
 FROM python:3.13-slim-bookworm
 
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
 RUN apt-get update && apt-get install -y \
     wget \
     espeak-ng \
@@ -10,8 +12,8 @@ WORKDIR /app
 RUN mkdir /models && \
     mkdir -p /tmp/piper
 
-# Install piper-tts (piper1-gpl v1.3.0) and Flask with Gunicorn for production
-RUN pip install --no-cache-dir "piper-tts>=1.3.0" flask gunicorn
+COPY pyproject.toml .
+RUN uv pip install --system --no-cache .
 
 # Download voice models - flat structure as expected by piper-tts
 RUN cd /models && \
