@@ -2,20 +2,19 @@ import os
 import tempfile
 import logging
 import wave
-from functools import wraps
-from flask import Flask, request, jsonify, send_file
-from piper import PiperVoice, SynthesisConfig
+from contextlib import asynccontextmanager
 
-app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 1 * 1024 * 1024  # 1MB
+from fastapi import FastAPI, Depends, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
+
+from piper import PiperVoice, SynthesisConfig
 
 log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
 logging.basicConfig(level=getattr(logging, log_level, logging.INFO))
-
-MAX_TEXT_LENGTH = 5000
-MAX_SEGMENTS = 20
-LENGTH_SCALE_MIN = 0.1
-LENGTH_SCALE_MAX = 5.0
+logger = logging.getLogger(__name__)
 
 if "ACCESS_TOKEN" not in os.environ:
     raise RuntimeError("The ACCESS_TOKEN environment variable is required but was not set.")
@@ -24,7 +23,6 @@ ACCESS_TOKEN = os.environ["ACCESS_TOKEN"]
 
 tempfile.tempdir = '/tmp/piper'
 
-# Voice cache to avoid reloading models
 voice_cache = {}
 
 MODELS_CONFIG = {
@@ -37,161 +35,112 @@ MODELS_CONFIG = {
     'it': '/models/it_IT-paola-medium.onnx',
 }
 
+SUPPORTED_LANGS = set(MODELS_CONFIG.keys())
 
-def require_auth(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        auth_header = request.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Bearer "):
-            return jsonify({"error": "Missing or invalid Authorization header"}), 401
-        token = auth_header.split(" ")[1]
-        if token != ACCESS_TOKEN:
-            return jsonify({"error": "Invalid token"}), 401
-        return f(*args, **kwargs)
-    return decorated
+security = HTTPBearer()
 
 
-def parse_length_scale(value):
-    try:
-        length_scale = float(value)
-    except (TypeError, ValueError):
-        return None, 'length_scale must be a number'
-    if not LENGTH_SCALE_MIN <= length_scale <= LENGTH_SCALE_MAX:
-        return None, f'length_scale must be between {LENGTH_SCALE_MIN} and {LENGTH_SCALE_MAX}'
-    return length_scale, None
+@asynccontextmanager
+async def lifespan(app):
+    os.makedirs('/tmp/piper', exist_ok=True)
+    yield
 
 
-def get_voice(model_path):
+app = FastAPI(lifespan=lifespan)
+
+
+def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    if credentials.credentials != ACCESS_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+
+def get_voice(model_path: str) -> PiperVoice:
     if model_path not in voice_cache:
-        app.logger.debug(f"Loading voice model: {model_path}")
+        logger.debug(f"Loading voice model: {model_path}")
         voice_cache[model_path] = PiperVoice.load(model_path)
     return voice_cache[model_path]
 
 
-@app.route('/tts', methods=['POST'])
-@require_auth
-def tts():
-    """
-    TTS endpoint.
-    Receives a JSON {"text": "...", "lang": "...", "length_scale": 1.0} and returns a WAV audio file.
-    """
-    data = request.get_json()
-    if not data or 'text' not in data:
-        return jsonify({'error': 'No text provided'}), 400
+class TTSRequest(BaseModel):
+    text: str = Field(max_length=5000)
+    lang: str = "en"
+    length_scale: float = Field(default=1.0, ge=0.1, le=5.0)
 
-    text = data['text']
-    lang = data.get('lang', 'en')
 
-    if len(text) > MAX_TEXT_LENGTH:
-        return jsonify({'error': f'Text too long (max {MAX_TEXT_LENGTH} characters)'}), 400
+class Segment(BaseModel):
+    text: str = Field(max_length=5000)
+    lang: str
+    length_scale: float = Field(default=1.0, ge=0.1, le=5.0)
 
-    length_scale, err = parse_length_scale(data.get('length_scale', 1.0))
-    if err is not None:
-        return jsonify({'error': err}), 400
 
-    if lang not in MODELS_CONFIG:
-        return jsonify({'error': f'Unsupported language: {lang}'}), 400
+class PolyglotRequest(BaseModel):
+    segments: list[Segment] = Field(min_length=1, max_length=20)
 
-    model_path = MODELS_CONFIG[lang]
+
+def cleanup_file(path: str):
+    if os.path.exists(path):
+        os.unlink(path)
+
+
+def cleanup_files(paths: list[str]):
+    for path in paths:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+@app.post('/tts')
+def tts(body: TTSRequest, _=Depends(verify_token)):
+    if body.lang not in SUPPORTED_LANGS:
+        raise HTTPException(status_code=400, detail=f"Unsupported language: {body.lang}")
+
+    model_path = MODELS_CONFIG[body.lang]
 
     with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
         output_path = temp_file.name
 
     try:
-        app.logger.debug(f"Processing TTS request (lang={lang}, length_scale={length_scale}, text_len={len(text)})")
+        logger.debug(f"Processing TTS request (lang={body.lang}, length_scale={body.length_scale}, text_len={len(body.text)})")
 
         voice = get_voice(model_path)
-
-        syn_config = SynthesisConfig(length_scale=length_scale)
+        syn_config = SynthesisConfig(length_scale=body.length_scale)
         with wave.open(output_path, 'wb') as wav_file:
-            voice.synthesize_wav(text, wav_file, syn_config=syn_config)
+            voice.synthesize_wav(body.text, wav_file, syn_config=syn_config)
 
-        app.logger.debug("Piper generation completed successfully")
+        logger.debug("Piper generation completed successfully")
 
-        return send_file(output_path, mimetype='audio/wav')
-
+        return FileResponse(
+            output_path,
+            media_type='audio/wav',
+            background=BackgroundTask(cleanup_file, output_path),
+        )
     except Exception as e:
-        app.logger.error(f"TTS error: {e}")
-        return jsonify({'error': 'Internal synthesis error'}), 500
-    finally:
-        if os.path.exists(output_path):
-            os.unlink(output_path)
+        cleanup_file(output_path)
+        logger.error(f"TTS error: {e}")
+        raise HTTPException(status_code=500, detail="Internal synthesis error")
 
 
-@app.route('/polyglot', methods=['POST'])
-@require_auth
-def polyglot():
-    """
-    Multilingual TTS endpoint for generating speech with multiple languages.
-
-    Generates a single WAV file from multiple text segments, each with its own language.
-    Useful for phrases mixing languages, like: "Tu dis Γεια σας pour saluer."
-
-    Request:
-        POST /polyglot
-        Headers:
-            Authorization: Bearer <token>
-            Content-Type: application/json
-        Body:
-            {
-                "segments": [
-                    {"text": "Tu dis ", "lang": "fr"},
-                    {"text": "Γεια σας", "lang": "el", "length_scale": 1.2},
-                    {"text": " pour saluer.", "lang": "fr"}
-                ]
-            }
-
-    Supported languages: en, fr, el, tr, de, es, it
-
-    Response:
-        200: audio/wav file
-        400: Invalid request (missing segments, invalid lang)
-        401: Missing or invalid token
-        500: Server error
-    """
-    data = request.get_json()
-    if not data or 'segments' not in data:
-        return jsonify({'error': 'No segments provided'}), 400
-
-    segments = data['segments']
-    if not isinstance(segments, list) or len(segments) == 0:
-        return jsonify({'error': 'Segments must be a non-empty array'}), 400
-
-    if len(segments) > MAX_SEGMENTS:
-        return jsonify({'error': f'Too many segments (max {MAX_SEGMENTS})'}), 400
+@app.post('/polyglot')
+def polyglot(body: PolyglotRequest, _=Depends(verify_token)):
+    for i, segment in enumerate(body.segments):
+        if segment.lang not in SUPPORTED_LANGS:
+            raise HTTPException(status_code=400, detail=f"Unsupported language: {segment.lang}")
 
     temp_files = []
     output_path = None
     reference_params = None
 
     try:
-        for i, segment in enumerate(segments):
-            if 'text' not in segment or 'lang' not in segment:
-                return jsonify({'error': f'Segment {i} missing text or lang'}), 400
-
-            text = segment['text']
-            lang = segment['lang']
-
-            if len(text) > MAX_TEXT_LENGTH:
-                return jsonify({'error': f'Segment {i} text too long (max {MAX_TEXT_LENGTH} characters)'}), 400
-
-            length_scale, err = parse_length_scale(segment.get('length_scale', 1.0))
-            if err is not None:
-                return jsonify({'error': err}), 400
-
-            if lang not in MODELS_CONFIG:
-                return jsonify({'error': f'Unsupported language: {lang}'}), 400
-
-            model_path = MODELS_CONFIG[lang]
+        for i, segment in enumerate(body.segments):
+            model_path = MODELS_CONFIG[segment.lang]
             voice = get_voice(model_path)
 
             with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tf:
                 temp_path = tf.name
             temp_files.append(temp_path)
 
-            syn_config = SynthesisConfig(length_scale=length_scale)
+            syn_config = SynthesisConfig(length_scale=segment.length_scale)
             with wave.open(temp_path, 'wb') as wav_file:
-                voice.synthesize_wav(text, wav_file, syn_config=syn_config)
+                voice.synthesize_wav(segment.text, wav_file, syn_config=syn_config)
 
             with wave.open(temp_path, 'rb') as wav_file:
                 params = wav_file.getparams()
@@ -200,9 +149,12 @@ def polyglot():
                 elif (params.nchannels != reference_params.nchannels or
                       params.sampwidth != reference_params.sampwidth or
                       params.framerate != reference_params.framerate):
-                    return jsonify({'error': f'Segment {i} has incompatible audio parameters'}), 500
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Segment {i} has incompatible audio parameters",
+                    )
 
-            app.logger.debug(f"Generated segment {i} (lang={lang}, length_scale={length_scale})")
+            logger.debug(f"Generated segment {i} (lang={segment.lang}, length_scale={segment.length_scale})")
 
         with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tf:
             output_path = tf.name
@@ -213,26 +165,27 @@ def polyglot():
                 with wave.open(temp_file, 'rb') as segment_wav:
                     output_wav.writeframes(segment_wav.readframes(segment_wav.getnframes()))
 
-        app.logger.debug(f"Concatenated {len(temp_files)} segments")
+        logger.debug(f"Concatenated {len(temp_files)} segments")
 
-        return send_file(output_path, mimetype='audio/wav')
-
+        all_files = temp_files + [output_path]
+        return FileResponse(
+            output_path,
+            media_type='audio/wav',
+            background=BackgroundTask(cleanup_files, all_files),
+        )
+    except HTTPException:
+        cleanup_files(temp_files)
+        if output_path:
+            cleanup_file(output_path)
+        raise
     except Exception as e:
-        app.logger.error(f"Polyglot error: {e}")
-        return jsonify({'error': 'Internal synthesis error'}), 500
-
-    finally:
-        for temp_file in temp_files:
-            if os.path.exists(temp_file):
-                os.unlink(temp_file)
-        if output_path and os.path.exists(output_path):
-            os.unlink(output_path)
+        cleanup_files(temp_files)
+        if output_path:
+            cleanup_file(output_path)
+        logger.error(f"Polyglot error: {e}")
+        raise HTTPException(status_code=500, detail="Internal synthesis error")
 
 
-@app.route('/health', methods=['GET'])
+@app.get('/health')
 def health():
-    return jsonify({'status': 'ok'})
-
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    return {'status': 'ok'}
