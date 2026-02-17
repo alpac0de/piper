@@ -1,6 +1,6 @@
 import os
 import struct
-import tempfile
+import wave
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -31,15 +31,15 @@ with patch.dict('os.environ', {'ACCESS_TOKEN': 'test-token', 'LOG_LEVEL': 'DEBUG
         mock_piper.SynthesisConfig = MagicMock()
         from app import app
 
+from fastapi.testclient import TestClient
+
 TOKEN = 'test-token'
-AUTH = {'Authorization': f'Bearer {TOKEN}', 'Content-Type': 'application/json'}
+AUTH = {'Authorization': f'Bearer {TOKEN}'}
 
 
 @pytest.fixture
 def client():
-    app.config['TESTING'] = True
-    with app.test_client() as client:
-        yield client
+    return TestClient(app)
 
 
 # --- Auth tests ---
@@ -47,7 +47,7 @@ def client():
 class TestAuth:
     def test_missing_auth_header(self, client):
         resp = client.post('/tts', json={'text': 'hello'})
-        assert resp.status_code == 401
+        assert resp.status_code in (401, 403)
 
     def test_invalid_token(self, client):
         resp = client.post('/tts', json={'text': 'hello'},
@@ -57,7 +57,7 @@ class TestAuth:
     def test_malformed_auth_header(self, client):
         resp = client.post('/tts', json={'text': 'hello'},
                            headers={'Authorization': 'Basic abc'})
-        assert resp.status_code == 401
+        assert resp.status_code in (401, 403)
 
 
 # --- Health check ---
@@ -66,7 +66,7 @@ class TestHealth:
     def test_health(self, client):
         resp = client.get('/health')
         assert resp.status_code == 200
-        assert resp.get_json() == {'status': 'ok'}
+        assert resp.json() == {'status': 'ok'}
 
 
 # --- TTS endpoint ---
@@ -74,30 +74,29 @@ class TestHealth:
 class TestTTS:
     def test_no_text(self, client):
         resp = client.post('/tts', json={}, headers=AUTH)
-        assert resp.status_code == 400
+        assert resp.status_code == 422
 
     def test_unsupported_lang(self, client):
         resp = client.post('/tts', json={'text': 'hello', 'lang': 'xx'}, headers=AUTH)
         assert resp.status_code == 400
-        assert 'Unsupported language' in resp.get_json()['error']
+        assert 'Unsupported language' in resp.json()['detail']
 
     def test_text_too_long(self, client):
         resp = client.post('/tts', json={'text': 'a' * 5001}, headers=AUTH)
-        assert resp.status_code == 400
-        assert 'too long' in resp.get_json()['error']
+        assert resp.status_code == 422
 
     def test_invalid_length_scale_type(self, client):
         resp = client.post('/tts', json={'text': 'hello', 'length_scale': 'abc'}, headers=AUTH)
-        assert resp.status_code == 400
+        assert resp.status_code == 422
 
     def test_length_scale_out_of_range(self, client):
         resp = client.post('/tts', json={'text': 'hello', 'length_scale': 10.0}, headers=AUTH)
-        assert resp.status_code == 400
+        assert resp.status_code == 422
 
     def test_success(self, client):
         resp = client.post('/tts', json={'text': 'hello', 'lang': 'en'}, headers=AUTH)
         assert resp.status_code == 200
-        assert resp.content_type == 'audio/wav'
+        assert resp.headers['content-type'] == 'audio/wav'
 
     def test_default_lang_is_en(self, client):
         resp = client.post('/tts', json={'text': 'hello'}, headers=AUTH)
@@ -113,30 +112,29 @@ class TestTTS:
 class TestPolyglot:
     def test_no_segments(self, client):
         resp = client.post('/polyglot', json={}, headers=AUTH)
-        assert resp.status_code == 400
+        assert resp.status_code == 422
 
     def test_empty_segments(self, client):
         resp = client.post('/polyglot', json={'segments': []}, headers=AUTH)
-        assert resp.status_code == 400
+        assert resp.status_code == 422
 
     def test_too_many_segments(self, client):
         segments = [{'text': 'hi', 'lang': 'en'}] * 21
         resp = client.post('/polyglot', json={'segments': segments}, headers=AUTH)
-        assert resp.status_code == 400
-        assert 'Too many segments' in resp.get_json()['error']
+        assert resp.status_code == 422
 
     def test_segment_missing_text(self, client):
         resp = client.post('/polyglot', json={'segments': [{'lang': 'en'}]}, headers=AUTH)
-        assert resp.status_code == 400
+        assert resp.status_code == 422
 
     def test_segment_missing_lang(self, client):
         resp = client.post('/polyglot', json={'segments': [{'text': 'hi'}]}, headers=AUTH)
-        assert resp.status_code == 400
+        assert resp.status_code == 422
 
     def test_segment_text_too_long(self, client):
         segments = [{'text': 'a' * 5001, 'lang': 'en'}]
         resp = client.post('/polyglot', json={'segments': segments}, headers=AUTH)
-        assert resp.status_code == 400
+        assert resp.status_code == 422
 
     def test_segment_unsupported_lang(self, client):
         segments = [{'text': 'hi', 'lang': 'xx'}]
@@ -150,7 +148,7 @@ class TestPolyglot:
         ]
         resp = client.post('/polyglot', json={'segments': segments}, headers=AUTH)
         assert resp.status_code == 200
-        assert resp.content_type == 'audio/wav'
+        assert resp.headers['content-type'] == 'audio/wav'
 
     def test_with_length_scale(self, client):
         segments = [{'text': 'hello', 'lang': 'en', 'length_scale': 1.2}]
