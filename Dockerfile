@@ -42,11 +42,13 @@ RUN cd /models && \
 # Fix espeak-ng-data path with symbolic link
 RUN ln -s /usr/lib/x86_64-linux-gnu/espeak-ng-data /usr/share/espeak-ng-data || true
 
-# Expose port 5000
+RUN useradd --create-home --no-log-init piper && \
+    chown -R piper:piper /app /models /tmp/piper
+
 EXPOSE 5000
 
-# Copy Flask application
-COPY app.py /app/app.py
+COPY --chown=piper:piper app.py /app/app.py
 
-# Start Flask application with Gunicorn for production
+USER piper
+
 CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "120", "app:app"]
