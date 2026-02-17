@@ -7,7 +7,15 @@ from flask import Flask, request, jsonify, send_file
 from piper import PiperVoice, SynthesisConfig
 
 app = Flask(__name__)
-logging.basicConfig(level=logging.DEBUG)
+app.config['MAX_CONTENT_LENGTH'] = 1 * 1024 * 1024  # 1MB
+
+log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
+logging.basicConfig(level=getattr(logging, log_level, logging.INFO))
+
+MAX_TEXT_LENGTH = 5000
+MAX_SEGMENTS = 20
+LENGTH_SCALE_MIN = 0.1
+LENGTH_SCALE_MAX = 5.0
 
 if "ACCESS_TOKEN" not in os.environ:
     raise RuntimeError("The ACCESS_TOKEN environment variable is required but was not set.")
@@ -47,10 +55,10 @@ def parse_length_scale(value):
     try:
         length_scale = float(value)
     except (TypeError, ValueError):
-        return None, jsonify({'error': 'length_scale must be a number'}), 400
-    if not 0.1 <= length_scale <= 5.0:
-        return None, jsonify({'error': 'length_scale must be between 0.1 and 5.0'}), 400
-    return length_scale, None, None
+        return None, 'length_scale must be a number'
+    if not LENGTH_SCALE_MIN <= length_scale <= LENGTH_SCALE_MAX:
+        return None, f'length_scale must be between {LENGTH_SCALE_MIN} and {LENGTH_SCALE_MAX}'
+    return length_scale, None
 
 
 def get_voice(model_path):
@@ -74,9 +82,12 @@ def tts():
     text = data['text']
     lang = data.get('lang', 'en')
 
-    length_scale, *err = parse_length_scale(data.get('length_scale', 1.0))
-    if err[0] is not None:
-        return err[0], err[1]
+    if len(text) > MAX_TEXT_LENGTH:
+        return jsonify({'error': f'Text too long (max {MAX_TEXT_LENGTH} characters)'}), 400
+
+    length_scale, err = parse_length_scale(data.get('length_scale', 1.0))
+    if err is not None:
+        return jsonify({'error': err}), 400
 
     if lang not in MODELS_CONFIG:
         return jsonify({'error': f'Unsupported language: {lang}'}), 400
@@ -87,7 +98,7 @@ def tts():
         output_path = temp_file.name
 
     try:
-        app.logger.debug(f"Trying to process text: '{text}' (lang={lang}, length_scale={length_scale})")
+        app.logger.debug(f"Processing TTS request (lang={lang}, length_scale={length_scale}, text_len={len(text)})")
 
         voice = get_voice(model_path)
 
@@ -95,13 +106,13 @@ def tts():
         with wave.open(output_path, 'wb') as wav_file:
             voice.synthesize_wav(text, wav_file, syn_config=syn_config)
 
-        app.logger.debug(f"Piper generation completed successfully")
+        app.logger.debug("Piper generation completed successfully")
 
         return send_file(output_path, mimetype='audio/wav')
 
     except Exception as e:
-        app.logger.error(f"Piper error: {str(e)}")
-        return jsonify({'error': f'Piper error: {str(e)}'}), 500
+        app.logger.error(f"TTS error: {e}")
+        return jsonify({'error': 'Internal synthesis error'}), 500
     finally:
         if os.path.exists(output_path):
             os.unlink(output_path)
@@ -146,6 +157,9 @@ def polyglot():
     if not isinstance(segments, list) or len(segments) == 0:
         return jsonify({'error': 'Segments must be a non-empty array'}), 400
 
+    if len(segments) > MAX_SEGMENTS:
+        return jsonify({'error': f'Too many segments (max {MAX_SEGMENTS})'}), 400
+
     temp_files = []
     output_path = None
     reference_params = None
@@ -158,9 +172,12 @@ def polyglot():
             text = segment['text']
             lang = segment['lang']
 
-            length_scale, *err = parse_length_scale(segment.get('length_scale', 1.0))
-            if err[0] is not None:
-                return err[0], err[1]
+            if len(text) > MAX_TEXT_LENGTH:
+                return jsonify({'error': f'Segment {i} text too long (max {MAX_TEXT_LENGTH} characters)'}), 400
+
+            length_scale, err = parse_length_scale(segment.get('length_scale', 1.0))
+            if err is not None:
+                return jsonify({'error': err}), 400
 
             if lang not in MODELS_CONFIG:
                 return jsonify({'error': f'Unsupported language: {lang}'}), 400
@@ -183,12 +200,9 @@ def polyglot():
                 elif (params.nchannels != reference_params.nchannels or
                       params.sampwidth != reference_params.sampwidth or
                       params.framerate != reference_params.framerate):
-                    return jsonify({
-                        'error': f'Segment {i} has incompatible audio params '
-                                 f'(rate={params.framerate}) vs reference (rate={reference_params.framerate})'
-                    }), 500
+                    return jsonify({'error': f'Segment {i} has incompatible audio parameters'}), 500
 
-            app.logger.debug(f"Generated segment {i}: '{text[:30]}...' (lang={lang}, length_scale={length_scale})")
+            app.logger.debug(f"Generated segment {i} (lang={lang}, length_scale={length_scale})")
 
         with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tf:
             output_path = tf.name
@@ -204,8 +218,8 @@ def polyglot():
         return send_file(output_path, mimetype='audio/wav')
 
     except Exception as e:
-        app.logger.error(f"Polyglot error: {str(e)}")
-        return jsonify({'error': f'Polyglot error: {str(e)}'}), 500
+        app.logger.error(f"Polyglot error: {e}")
+        return jsonify({'error': 'Internal synthesis error'}), 500
 
     finally:
         for temp_file in temp_files:
