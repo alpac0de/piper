@@ -1,0 +1,16 @@
+.env
+__pycache__/
+*.pyc
+
+# Audio files
+*.wav
+*.mp3
+
+# Models
+*.onnx
+*.onnx.json
+/models/
+
+# Training
+training/dataset/
+training/*.ckpt
